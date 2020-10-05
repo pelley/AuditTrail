@@ -1,42 +1,47 @@
 public without sharing class AuditTrailServices {
     public static void LogChange(String sObjectName, List<SObject> newObjs, Map<Id, SObject> newObjsMap, List<SObject> oldObjs, Map<Id, SObject> oldObjsMap) {
 
-        // Get list of fields from sObject
-        Map<String, Schema.SObjectField> allFieldsMap = Schema.getGlobalDescribe().get(sObjectName).getDescribe().fields.getMap();
-        Map<String, Schema.DescribeFieldResult> fieldsToTrack = new Map<String, Schema.DescribeFieldResult>();
-        for (Schema.SObjectField fld : allFieldsMap.values()) {
-            Schema.DescribeFieldResult describeResult = fld.getDescribe();
+        try {
+            // Get list of fields from sObject
+            Map<String, Schema.SObjectField> allFieldsMap = Schema.getGlobalDescribe().get(sObjectName).getDescribe().fields.getMap();
+            Map<String, Schema.DescribeFieldResult> fieldsToTrack = new Map<String, Schema.DescribeFieldResult>();
+            for (Schema.SObjectField fld : allFieldsMap.values()) {
+                Schema.DescribeFieldResult describeResult = fld.getDescribe();
 
-            // Add field to list if configured for auditing
-            String fldName = describeResult.getName();
-            List<Audit_Trail_Config__c> lstCfg = [SELECT Id FROM Audit_Trail_Config__c WHERE SObject_Name__c = :sObjectName AND Field_Name__c = :fldName];
-            if (lstCfg.size() > 0) {
-                fieldsToTrack.put(fldName, describeResult);
+                // Add field to list if configured for auditing
+                String fldName = describeResult.getName();
+                List<Audit_Trail_Config__c> lstCfg = [SELECT Id FROM Audit_Trail_Config__c WHERE SObject_Name__c = :sObjectName AND Field_Name__c = :fldName];
+                if (lstCfg.size() > 0) {
+                    fieldsToTrack.put(fldName, describeResult);
+                }
             }
-        }
 
-        List<Audit_Trail__c> auditsToInsert = new List<Audit_Trail__c>();
+            List<Audit_Trail__c> auditsToInsert = new List<Audit_Trail__c>();
 
-        for (SObject newObj : newObjs) {  // Loop through new objects
-            SObject oldObj = oldObjs == null ? null : oldObjsMap.get(newObj.Id);  // Get corresponding old object
+            for (SObject newObj : newObjs) {  // Loop through new objects
+                SObject oldObj = oldObjs == null ? null : oldObjsMap.get(newObj.Id);  // Get corresponding old object
 
-            for (Schema.DescribeFieldResult fieldDescribe : fieldsToTrack.values()) {  // Loop through list of field descriptions
-                Boolean auditNeeded = false;
-                if (oldObj == null) {  // Check whether new record
-                    auditNeeded = true;
-                } else {
-                    if (oldObj.get(fieldDescribe.getName()) != newObj.get(fieldDescribe.getName())) {  // Check if values are different
+                for (Schema.DescribeFieldResult fieldDescribe : fieldsToTrack.values()) {  // Loop through list of field descriptions
+                    Boolean auditNeeded = false;
+                    if (oldObj == null) {  // Check whether new record
                         auditNeeded = true;
+                    } else {
+                        if (oldObj.get(fieldDescribe.getName()) != newObj.get(fieldDescribe.getName())) {  // Check if values are different
+                            auditNeeded = true;
+                        }
+                    }
+                    if (auditNeeded) {
+                        Audit_Trail__c adtTrl = createAuditTrail(sObjectName, fieldDescribe, oldObj, newObj);
+                        auditsToInsert.add(adtTrl);
                     }
                 }
-                if (auditNeeded) {
-                    Audit_Trail__c adtTrl = createAuditTrail(sObjectName, fieldDescribe, oldObj, newObj);
-                    auditsToInsert.add(adtTrl);
-                }
             }
-        }
 
-        insert auditsToInsert;
+            insert auditsToInsert;
+        } catch(exception e) {
+            String errMessage = e.getMessage();
+            Trigger.New[0].adderror(errMessage);
+        }
     }
 
     private static Audit_Trail__c createAuditTrail(String sObjectName, Schema.DescribeFieldResult field, SObject oldObj, SObject newObj) {
