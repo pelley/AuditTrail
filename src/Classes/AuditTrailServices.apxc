@@ -1,0 +1,68 @@
+public without sharing class AuditTrailServices {
+    public static void LogChange(String sObjectName, List<SObject> newObjs, Map<Id, SObject> newObjsMap, List<SObject> oldObjs, Map<Id, SObject> oldObjsMap) {
+
+        // Get list of fields from sObject
+        Map<String, Schema.SObjectField> allFieldsMap = Schema.getGlobalDescribe().get(sObjectName).getDescribe().fields.getMap();
+        Map<String, Schema.DescribeFieldResult> fieldsToTrack = new Map<String, Schema.DescribeFieldResult>();
+        for (Schema.SObjectField fld : allFieldsMap.values()) {
+            Schema.DescribeFieldResult describeResult = fld.getDescribe();
+
+            // Add field to list if configured for auditing
+            String fldName = describeResult.getName();
+            List<Audit_Trail_Config__c> lstCfg = [SELECT Id FROM Audit_Trail_Config__c WHERE SObject_Name__c = :sObjectName AND Field_Name__c = :fldName];
+            if (lstCfg.size() > 0) {
+                fieldsToTrack.put(fldName, describeResult);
+            }
+        }
+
+        List<Audit_Trail__c> auditsToInsert = new List<Audit_Trail__c>();
+
+        for (SObject newObj : newObjs) {  // Loop through new objects
+            SObject oldObj = oldObjs == null ? null : oldObjsMap.get(newObj.Id);  // Get corresponding old object
+
+            for (Schema.DescribeFieldResult fieldDescribe : fieldsToTrack.values()) {  // Loop through list of field descriptions
+                Boolean auditNeeded = false;
+                if (oldObj == null) {  // Check whether new record
+                    auditNeeded = true;
+                } else {
+                    if (oldObj.get(fieldDescribe.getName()) != newObj.get(fieldDescribe.getName())) {  // Check if values are different
+                        auditNeeded = true;
+                    }
+                }
+                if (auditNeeded) {
+                    Audit_Trail__c adtTrl = createAuditTrail(sObjectName, fieldDescribe, oldObj, newObj);
+                    auditsToInsert.add(adtTrl);
+                }
+            }
+        }
+
+        insert auditsToInsert;
+    }
+
+    private static Audit_Trail__c createAuditTrail(String sObjectName, Schema.DescribeFieldResult field, SObject oldObj, SObject newObj) {
+        Audit_Trail__c adtTrl = new Audit_Trail__c();
+        adtTrl.RecordId__c = newObj.Id;
+        adtTrl.SObject_Name__c = sObjectName;
+        adtTrl.Field_Name__c = field.getLabel();
+        if (oldObj != null) {
+            if (oldObj.get(field.getName()) != null) {
+                adtTrl.Previous_Value__c = ((String) oldObj.get(field.getName())).abbreviate(255);
+            }
+        }
+        adtTrl.New_Value__c = ((String) newObj.get(field.getName())).abbreviate(255);
+        adtTrl.User__c = UserInfo.getUserId();
+        adtTrl.Date_Time_of_Change__c  = System.now();
+        return adtTrl;
+    }
+
+    @AuraEnabled(cacheable=true)
+    public static List<Audit_Trail__c> findAudits(String id) {
+        return [
+            SELECT Id, RecordId__c, Field_Name__c, Previous_Value__c, New_Value__c, Date_Time_of_Change__c, User__r.Name
+            FROM Audit_Trail__c
+            WHERE RecordId__c = :id
+            ORDER BY Date_Time_of_Change__c DESC
+        ];
+    }
+
+}
